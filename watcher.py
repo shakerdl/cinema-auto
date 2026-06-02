@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
 Cinema City Date Watcher - Interactive Dashboard
+Works without Chrome/Selenium - uses HTTP requests only.
 """
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -12,13 +14,6 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.common.exceptions import TimeoutException, WebDriverException
 
 # ─── Colors ───────────────────────────────────────────────────
 class C:
@@ -38,14 +33,20 @@ class C:
 # ─── Configuration ────────────────────────────────────────────
 CONFIG_FILE = os.path.expanduser("~/CinemaCityWatcher/config.json")
 STATE_FILE = os.path.expanduser("~/CinemaCityWatcher/last_dates.json")
-SCREENSHOT_DIR = os.path.expanduser("~/CinemaCityWatcher")
+OUTPUT_DIR = os.path.expanduser("~/CinemaCityWatcher")
 
 DEFAULT_CONFIG = {
     "cinema": "ראשון לציון",
     "movie_type": "רגיל",
     "movies": ["אובססיה"],
     "check_interval_minutes": 5,
-    "headless": True,
+}
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+    "Accept": "text/html,application/json,*/*",
+    "Accept-Language": "he-IL,he;q=0.9,en;q=0.8",
+    "Referer": "https://www.cinema-city.co.il/",
 }
 
 
@@ -59,7 +60,7 @@ def load_config():
 
 
 def save_config(config):
-    Path(SCREENSHOT_DIR).mkdir(parents=True, exist_ok=True)
+    Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
 
@@ -89,7 +90,7 @@ def send_notification(title, message):
              "--led-color", "ff0000", "--sound"],
             check=True, timeout=10,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
         pass
 
 
@@ -168,119 +169,190 @@ def print_countdown(seconds_left):
     print(f"\r    {C.CYAN}⏱  Next check in: {mins:02d}:{secs:02d}{C.RESET}  ", end="", flush=True)
 
 
-# ─── Browser Logic ────────────────────────────────────────────
+# ─── Web Scraping (no browser needed) ────────────────────────
 
-def get_driver(config):
-    options = Options()
-    if config["headless"]:
-        options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1080,1920")
-    options.add_argument("--lang=he")
-    options.add_argument(
-        "--user-agent=Mozilla/5.0 (Linux; Android 13; Pixel 7) "
-        "AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"
-    )
-    return webdriver.Chrome(service=Service(), options=options)
-
-
-def check_movie_dates(driver, config, movie_name):
-    """Navigate and extract dates for a specific movie."""
-    driver.get("https://www.cinema-city.co.il/")
-    time.sleep(3)
-
-    # Select cinema
-    for selector in [
-        f"//*[contains(text(), '{config['cinema']}')]",
-        f"//option[contains(text(), '{config['cinema']}')]",
-        f"//button[contains(text(), '{config['cinema']}')]",
-    ]:
-        try:
-            el = driver.find_element(By.XPATH, selector)
-            el.click()
-            break
-        except Exception:
-            continue
-    time.sleep(2)
-
-    # Select type
-    for selector in [
-        f"//*[contains(text(), '{config['movie_type']}')]",
-        f"//button[contains(text(), '{config['movie_type']}')]",
-    ]:
-        try:
-            el = driver.find_element(By.XPATH, selector)
-            el.click()
-            break
-        except Exception:
-            continue
-    time.sleep(2)
-
-    # Select movie
-    for selector in [
-        f"//*[contains(text(), '{movie_name}')]",
-        f"//button[contains(text(), '{movie_name}')]",
-        f"//a[contains(text(), '{movie_name}')]",
-    ]:
-        try:
-            el = driver.find_element(By.XPATH, selector)
-            el.click()
-            break
-        except Exception:
-            continue
-    time.sleep(2)
-
-    # Read dates
+def fetch_dates(session, config, movie_name):
+    """
+    Fetch available dates for a movie from Cinema City website.
+    Uses HTTP requests - no browser required.
+    """
     dates = set()
-    date_selectors = [
-        "//select[contains(@class, 'date')]",
-        "//select[contains(@name, 'date')]",
-        "//select[contains(@id, 'date')]",
-        "//*[contains(@class, 'date-select')]//select",
+    base_url = "https://www.cinema-city.co.il"
+
+    # Strategy 1: Try the main page and ticket pages for embedded data
+    pages_to_try = [
+        base_url,
+        f"{base_url}/tickets",
+        f"{base_url}/he/tickets",
+        f"{base_url}/booking",
     ]
 
-    for selector in date_selectors:
+    for page_url in pages_to_try:
         try:
-            select_el = driver.find_element(By.XPATH, selector)
-            options = select_el.find_elements(By.TAG_NAME, "option")
-            for opt in options:
-                text = opt.text.strip()
-                if text and "בחר" not in text and "תאריך" not in text:
-                    dates.add(text)
-            if dates:
-                break
-        except Exception:
+            resp = session.get(page_url, headers=HEADERS, timeout=15)
+            if resp.status_code != 200:
+                continue
+
+            html = resp.text
+
+            # Look for __NEXT_DATA__ (Next.js embedded state)
+            next_match = re.search(
+                r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+                html, re.DOTALL
+            )
+            if next_match:
+                try:
+                    next_data = json.loads(next_match.group(1))
+                    found = extract_dates_from_json(next_data, movie_name)
+                    if found:
+                        dates.update(found)
+                        return dates
+                except json.JSONDecodeError:
+                    pass
+
+            # Look for embedded JSON state
+            state_patterns = [
+                r'window\.__INITIAL_STATE__\s*=\s*({.*?});',
+                r'window\.__DATA__\s*=\s*({.*?});',
+                r'window\.__NUXT__\s*=\s*({.*?});',
+            ]
+            for pattern in state_patterns:
+                match = re.search(pattern, html, re.DOTALL)
+                if match:
+                    try:
+                        data = json.loads(match.group(1))
+                        found = extract_dates_from_json(data, movie_name)
+                        if found:
+                            dates.update(found)
+                            return dates
+                    except json.JSONDecodeError:
+                        pass
+
+            # Look for Hebrew date patterns directly in HTML
+            # Pattern: יום X DD/MM/YYYY
+            date_pattern = r'יום [א-ש]{1,2}[\s\u0027]*\s*\d{2}/\d{2}/\d{4}'
+            found_dates = re.findall(date_pattern, html)
+            if found_dates:
+                # Check if movie name appears near these dates
+                if movie_name in html:
+                    dates.update(found_dates)
+                    return dates
+
+        except requests.RequestException:
             continue
 
-    # Fallback: date elements
-    if not dates:
-        for selector in [
-            "//*[contains(@class, 'date-item')]",
-            "//*[contains(@class, 'day-item')]",
-            "//*[contains(@class, 'screening-date')]",
-        ]:
-            try:
-                elements = driver.find_elements(By.XPATH, selector)
-                for el in elements:
-                    text = el.text.strip()
-                    if text:
-                        dates.add(text)
-                if dates:
-                    break
-            except Exception:
-                continue
+    # Strategy 2: Try API endpoints
+    api_endpoints = [
+        "/api/screenings",
+        "/api/movies",
+        "/api/shows",
+        "/api/schedule",
+        "/api/v1/screenings",
+        "/api/v2/screenings",
+    ]
+
+    for endpoint in api_endpoints:
+        try:
+            url = base_url + endpoint
+            resp = session.get(url, headers=HEADERS, timeout=10)
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    found = extract_dates_from_json(data, movie_name)
+                    if found:
+                        dates.update(found)
+                        return dates
+                except (json.JSONDecodeError, ValueError):
+                    pass
+        except requests.RequestException:
+            continue
+
+    # Strategy 3: Look for XHR/fetch URLs in JavaScript bundles
+    try:
+        resp = session.get(base_url, headers=HEADERS, timeout=15)
+        if resp.status_code == 200:
+            # Find JS bundle URLs
+            script_urls = re.findall(r'src="([^"]*\.js[^"]*)"', resp.text)
+            for script_url in script_urls[:5]:
+                if not script_url.startswith("http"):
+                    script_url = base_url + script_url
+                try:
+                    js_resp = session.get(script_url, headers=HEADERS, timeout=10)
+                    if js_resp.status_code == 200:
+                        # Find API URLs in the bundle
+                        api_urls = re.findall(
+                            r'["\'](/api/[^"\']+)["\']', js_resp.text
+                        )
+                        for api_url in api_urls:
+                            try:
+                                r = session.get(
+                                    base_url + api_url,
+                                    headers=HEADERS, timeout=8
+                                )
+                                if r.status_code == 200:
+                                    data = r.json()
+                                    found = extract_dates_from_json(data, movie_name)
+                                    if found:
+                                        dates.update(found)
+                                        return dates
+                            except (requests.RequestException, ValueError):
+                                continue
+                except requests.RequestException:
+                    continue
+    except requests.RequestException:
+        pass
 
     return dates
 
 
-def take_screenshot(driver, movie_name):
+def extract_dates_from_json(data, movie_filter=None, depth=0):
+    """Recursively extract date values from JSON, optionally filtering by movie."""
+    if depth > 10:
+        return set()
+
+    dates = set()
+
+    if isinstance(data, dict):
+        # Check if this object is related to our movie
+        values_str = json.dumps(data, ensure_ascii=False)
+        is_relevant = movie_filter is None or movie_filter in values_str
+
+        if is_relevant:
+            for key, value in data.items():
+                key_lower = key.lower()
+                if any(d in key_lower for d in ["date", "day", "screen", "show", "time"]):
+                    if isinstance(value, str):
+                        # Check if it looks like a date
+                        if re.match(r'.*\d{2}/\d{2}/\d{4}', value) or \
+                           re.match(r'.*\d{4}-\d{2}-\d{2}', value) or \
+                           re.match(r'יום', value):
+                            dates.add(value)
+                    elif isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, str):
+                                dates.add(item)
+                            elif isinstance(item, dict):
+                                dates.update(extract_dates_from_json(item, None, depth + 1))
+
+            for key, value in data.items():
+                if isinstance(value, (dict, list)):
+                    dates.update(extract_dates_from_json(value, movie_filter, depth + 1))
+
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, (dict, list)):
+                dates.update(extract_dates_from_json(item, movie_filter, depth + 1))
+
+    return dates
+
+
+def save_snapshot(data, reason="check"):
+    """Save response data for debugging."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_name = movie_name.replace(" ", "_")
-    filename = f"change_{safe_name}_{timestamp}.png"
-    filepath = os.path.join(SCREENSHOT_DIR, filename)
-    driver.save_screenshot(filepath)
+    filename = f"snapshot_{reason}_{timestamp}.json"
+    filepath = os.path.join(OUTPUT_DIR, filename)
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
     return filepath
 
 
@@ -288,20 +360,17 @@ def take_screenshot(driver, movie_name):
 
 def run_check(config, state):
     """Run one check cycle. Returns updated state."""
-    driver = None
     changes_detected = False
+    session = requests.Session()
 
-    try:
-        driver = get_driver(config)
+    if "movies" not in state:
+        state["movies"] = {}
 
-        if "movies" not in state:
-            state["movies"] = {}
+    for movie in config["movies"]:
+        print(f"\n    {C.CYAN}🔍 Checking: {movie}...{C.RESET}", end="", flush=True)
 
-        for movie in config["movies"]:
-            print(f"\n    {C.CYAN}🔍 Checking: {movie}...{C.RESET}", end="", flush=True)
-
-            current_dates = check_movie_dates(driver, config, movie)
-
+        try:
+            current_dates = fetch_dates(session, config, movie)
             previous_dates = set(state.get("movies", {}).get(movie, {}).get("dates", []))
 
             if current_dates:
@@ -310,11 +379,11 @@ def run_check(config, state):
                 if previous_dates and new_dates:
                     changes_detected = True
                     print_change_alert(movie, new_dates)
-                    take_screenshot(driver, movie)
+                    save_snapshot({"movie": movie, "new": list(new_dates), "all": list(current_dates)}, "new_date")
                     send_vibrate()
                     send_notification(
-                        f"🚨 תאריך חדש - {movie}!",
-                        f"חדש: {', '.join(new_dates)}"
+                        f"🚨 New date - {movie}!",
+                        f"New: {', '.join(new_dates)}"
                     )
                     state["changes_found"] = state.get("changes_found", 0) + 1
                 else:
@@ -327,19 +396,11 @@ def run_check(config, state):
             else:
                 print(f" {C.YELLOW}⚠ No dates found{C.RESET}")
 
-        state["last_check"] = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
-        state["total_checks"] = state.get("total_checks", 0) + 1
+        except Exception as e:
+            print(f" {C.RED}✗ Error: {str(e)[:50]}{C.RESET}")
 
-    except WebDriverException as e:
-        print(f"\n    {C.RED}✗ Browser error: {str(e)[:60]}{C.RESET}")
-    except Exception as e:
-        print(f"\n    {C.RED}✗ Error: {str(e)[:60]}{C.RESET}")
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
+    state["last_check"] = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
+    state["total_checks"] = state.get("total_checks", 0) + 1
 
     if not changes_detected:
         print_no_change()
@@ -348,7 +409,6 @@ def run_check(config, state):
 
 
 def show_menu(config):
-    """Show interactive menu."""
     print(f"""
   {C.DIM}{'─' * 46}{C.RESET}
   {C.WHITE}{C.BOLD}Menu:{C.RESET}
@@ -363,7 +423,6 @@ def show_menu(config):
 
 
 def handle_menu(config, state):
-    """Handle menu input. Returns (config, state, should_check_now)."""
     show_menu(config)
     choice = input(f"    {C.WHITE}Choice: {C.RESET}").strip()
 
@@ -413,11 +472,11 @@ def handle_menu(config, state):
 
 
 def main():
-    Path(SCREENSHOT_DIR).mkdir(parents=True, exist_ok=True)
+    Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
     config = load_config()
     state = load_state()
 
-    send_notification("Cinema Watcher", "המעקב התחיל ▶")
+    send_notification("Cinema Watcher", "Monitoring started ▶")
 
     while True:
         clear_screen()
@@ -444,13 +503,16 @@ def main():
 
             # Check for user input (non-blocking)
             import select
-            if sys.stdin in select.select([sys.stdin], [], [], 1)[0]:
-                sys.stdin.readline()
-                config, state, check_now = handle_menu(config, state)
-                if check_now:
+            try:
+                if sys.stdin in select.select([sys.stdin], [], [], 1)[0]:
+                    sys.stdin.readline()
+                    config, state, check_now = handle_menu(config, state)
+                    if check_now:
+                        break
+                    input(f"\n    {C.DIM}Enter to continue...{C.RESET}")
                     break
-                input(f"\n    {C.DIM}Enter to continue...{C.RESET}")
-                break
+            except (OSError, ValueError):
+                time.sleep(1)
 
         print()
 
