@@ -108,25 +108,25 @@ def print_header(config):
 ║         🎬  Cinema City Watcher  🎬              ║
 ╚══════════════════════════════════════════════════╝{C.RESET}
 """)
-    print(f"  {C.WHITE}קולנוע:{C.RESET}  {C.BOLD}{config['cinema']}{C.RESET}")
-    print(f"  {C.WHITE}סוג:{C.RESET}     {config['movie_type']}")
-    print(f"  {C.WHITE}סרטים:{C.RESET}   {', '.join(config['movies'])}")
-    print(f"  {C.WHITE}בדיקה:{C.RESET}   כל {config['check_interval_minutes']} דקות")
+    print(f"  {C.WHITE}Cinema:{C.RESET}   {C.BOLD}{config['cinema']}{C.RESET}")
+    print(f"  {C.WHITE}Type:{C.RESET}     {config['movie_type']}")
+    print(f"  {C.WHITE}Movies:{C.RESET}   {', '.join(config['movies'])}")
+    print(f"  {C.WHITE}Interval:{C.RESET} Every {config['check_interval_minutes']} min")
     print()
 
 
 def print_status(state, config):
     print(f"  {C.DIM}{'─' * 46}{C.RESET}")
-    print(f"  {C.WHITE}{C.BOLD}סטטוס נוכחי:{C.RESET}")
+    print(f"  {C.WHITE}{C.BOLD}Current Status:{C.RESET}")
     print()
 
     if not state:
-        print(f"    {C.YELLOW}⏳ טרם בוצעה בדיקה ראשונה{C.RESET}")
+        print(f"    {C.YELLOW}⏳ Waiting for first check...{C.RESET}")
         return
 
     last_check = state.get("last_check", "")
     if last_check:
-        print(f"    {C.DIM}בדיקה אחרונה: {last_check}{C.RESET}")
+        print(f"    {C.DIM}Last check: {last_check}{C.RESET}")
 
     print()
     for movie, data in state.get("movies", {}).items():
@@ -136,21 +136,21 @@ def print_status(state, config):
             for d in sorted(dates):
                 print(f"       {C.GREEN}📅 {d}{C.RESET}")
         else:
-            print(f"       {C.DIM}אין תאריכים{C.RESET}")
+            print(f"       {C.DIM}No dates found{C.RESET}")
         print()
 
     total_checks = state.get("total_checks", 0)
     changes_found = state.get("changes_found", 0)
-    print(f"    {C.DIM}בדיקות: {total_checks} | שינויים: {changes_found}{C.RESET}")
+    print(f"    {C.DIM}Checks: {total_checks} | Changes: {changes_found}{C.RESET}")
 
 
 def print_change_alert(movie, new_dates):
     print()
     print(f"  {C.BG_RED}{C.WHITE}{C.BOLD}")
     print(f"  ╔══════════════════════════════════════════════╗")
-    print(f"  ║   🚨  תאריך חדש נמצא!  🚨                  ║")
+    print(f"  ║   🚨  NEW DATE FOUND!  🚨                   ║")
     print(f"  ╠══════════════════════════════════════════════╣")
-    print(f"  ║   סרט: {movie:<37} ║")
+    print(f"  ║   Movie: {movie:<35} ║")
     for d in new_dates:
         print(f"  ║   📅  {d:<38} ║")
     print(f"  ╚══════════════════════════════════════════════╝")
@@ -159,13 +159,13 @@ def print_change_alert(movie, new_dates):
 
 
 def print_no_change():
-    print(f"\n    {C.GREEN}✓ אין שינוי{C.RESET}")
+    print(f"\n    {C.GREEN}✓ No changes{C.RESET}")
 
 
 def print_countdown(seconds_left):
     mins = seconds_left // 60
     secs = seconds_left % 60
-    print(f"\r    {C.CYAN}⏱  בדיקה הבאה בעוד: {mins:02d}:{secs:02d}{C.RESET}  ", end="", flush=True)
+    print(f"\r    {C.CYAN}⏱  Next check in: {mins:02d}:{secs:02d}{C.RESET}  ", end="", flush=True)
 
 
 # ─── Browser Logic ────────────────────────────────────────────
@@ -298,7 +298,7 @@ def run_check(config, state):
             state["movies"] = {}
 
         for movie in config["movies"]:
-            print(f"\n    {C.CYAN}🔍 בודק: {movie}...{C.RESET}", end="", flush=True)
+            print(f"\n    {C.CYAN}🔍 Checking: {movie}...{C.RESET}", end="", flush=True)
 
             current_dates = check_movie_dates(driver, config, movie)
 
@@ -325,15 +325,15 @@ def run_check(config, state):
                     "last_update": datetime.now().isoformat(),
                 }
             else:
-                print(f" {C.YELLOW}⚠ לא נמצאו תאריכים{C.RESET}")
+                print(f" {C.YELLOW}⚠ No dates found{C.RESET}")
 
         state["last_check"] = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
         state["total_checks"] = state.get("total_checks", 0) + 1
 
     except WebDriverException as e:
-        print(f"\n    {C.RED}✗ שגיאת דפדפן: {str(e)[:60]}{C.RESET}")
+        print(f"\n    {C.RED}✗ Browser error: {str(e)[:60]}{C.RESET}")
     except Exception as e:
-        print(f"\n    {C.RED}✗ שגיאה: {str(e)[:60]}{C.RESET}")
+        print(f"\n    {C.RED}✗ Error: {str(e)[:60]}{C.RESET}")
     finally:
         if driver:
             try:
@@ -351,51 +351,51 @@ def show_menu(config):
     """Show interactive menu."""
     print(f"""
   {C.DIM}{'─' * 46}{C.RESET}
-  {C.WHITE}{C.BOLD}תפריט:{C.RESET}
+  {C.WHITE}{C.BOLD}Menu:{C.RESET}
 
-    {C.CYAN}[1]{C.RESET} הוסף סרט
-    {C.CYAN}[2]{C.RESET} הסר סרט
-    {C.CYAN}[3]{C.RESET} שנה תדירות בדיקה
-    {C.CYAN}[4]{C.RESET} בדוק עכשיו
-    {C.CYAN}[5]{C.RESET} אפס מצב (reset)
-    {C.CYAN}[q]{C.RESET} יציאה
+    {C.CYAN}[1]{C.RESET} Add movie
+    {C.CYAN}[2]{C.RESET} Remove movie
+    {C.CYAN}[3]{C.RESET} Change interval
+    {C.CYAN}[4]{C.RESET} Check now
+    {C.CYAN}[5]{C.RESET} Reset state
+    {C.CYAN}[q]{C.RESET} Quit
 """)
 
 
 def handle_menu(config, state):
     """Handle menu input. Returns (config, state, should_check_now)."""
     show_menu(config)
-    choice = input(f"    {C.WHITE}בחירה: {C.RESET}").strip()
+    choice = input(f"    {C.WHITE}Choice: {C.RESET}").strip()
 
     if choice == "1":
-        name = input(f"    {C.WHITE}שם הסרט: {C.RESET}").strip()
+        name = input(f"    {C.WHITE}Movie name: {C.RESET}").strip()
         if name and name not in config["movies"]:
             config["movies"].append(name)
             save_config(config)
-            print(f"    {C.GREEN}✓ נוסף: {name}{C.RESET}")
+            print(f"    {C.GREEN}✓ Added: {name}{C.RESET}")
         elif name in config["movies"]:
-            print(f"    {C.YELLOW}כבר קיים{C.RESET}")
+            print(f"    {C.YELLOW}Already exists{C.RESET}")
 
     elif choice == "2":
         for i, m in enumerate(config["movies"], 1):
             print(f"      {C.CYAN}[{i}]{C.RESET} {m}")
-        idx = input(f"    {C.WHITE}מספר להסרה: {C.RESET}").strip()
+        idx = input(f"    {C.WHITE}Number to remove: {C.RESET}").strip()
         try:
             idx = int(idx) - 1
             removed = config["movies"].pop(idx)
             save_config(config)
-            print(f"    {C.GREEN}✓ הוסר: {removed}{C.RESET}")
+            print(f"    {C.GREEN}✓ Removed: {removed}{C.RESET}")
         except (ValueError, IndexError):
-            print(f"    {C.RED}מספר לא תקין{C.RESET}")
+            print(f"    {C.RED}Invalid number{C.RESET}")
 
     elif choice == "3":
-        mins = input(f"    {C.WHITE}דקות בין בדיקות (נוכחי: {config['check_interval_minutes']}): {C.RESET}").strip()
+        mins = input(f"    {C.WHITE}Minutes between checks (current: {config['check_interval_minutes']}): {C.RESET}").strip()
         try:
             config["check_interval_minutes"] = max(1, int(mins))
             save_config(config)
-            print(f"    {C.GREEN}✓ עודכן ל-{config['check_interval_minutes']} דקות{C.RESET}")
+            print(f"    {C.GREEN}✓ Updated to {config['check_interval_minutes']} min{C.RESET}")
         except ValueError:
-            print(f"    {C.RED}מספר לא תקין{C.RESET}")
+            print(f"    {C.RED}Invalid number{C.RESET}")
 
     elif choice == "4":
         return config, state, True
@@ -403,10 +403,10 @@ def handle_menu(config, state):
     elif choice == "5":
         state = {}
         save_state(state)
-        print(f"    {C.GREEN}✓ מצב אופס{C.RESET}")
+        print(f"    {C.GREEN}✓ State reset{C.RESET}")
 
     elif choice.lower() == "q":
-        print(f"\n  {C.DIM}להתראות! 👋{C.RESET}\n")
+        print(f"\n  {C.DIM}Goodbye! 👋{C.RESET}\n")
         sys.exit(0)
 
     return config, state, False
@@ -431,7 +431,7 @@ def main():
         # Countdown with menu option
         interval = config["check_interval_minutes"] * 60
         print(f"\n  {C.DIM}{'─' * 46}{C.RESET}")
-        print(f"  {C.DIM}לחץ Enter לתפריט, או המתן לבדיקה הבאה...{C.RESET}")
+        print(f"  {C.DIM}Press Enter for menu, or wait for next check...{C.RESET}")
 
         start_wait = time.time()
         while True:
@@ -449,7 +449,7 @@ def main():
                 config, state, check_now = handle_menu(config, state)
                 if check_now:
                     break
-                input(f"\n    {C.DIM}Enter להמשך...{C.RESET}")
+                input(f"\n    {C.DIM}Enter to continue...{C.RESET}")
                 break
 
         print()
@@ -459,4 +459,4 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print(f"\n\n  {C.DIM}נעצר. להתראות! 👋{C.RESET}\n")
+        print(f"\n\n  {C.DIM}Stopped. Goodbye! 👋{C.RESET}\n")
